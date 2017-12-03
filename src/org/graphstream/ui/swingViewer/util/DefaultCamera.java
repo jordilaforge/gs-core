@@ -31,6 +31,21 @@
  */
 package org.graphstream.ui.swingViewer.util;
 
+import java.awt.Graphics2D;
+import java.awt.geom.AffineTransform;
+import java.awt.geom.NoninvertibleTransformException;
+import java.awt.geom.Point2D;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.EnumSet;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Optional;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+import org.graphstream.graph.Edge;
 import org.graphstream.graph.Node;
 import org.graphstream.ui.geom.Point2;
 import org.graphstream.ui.geom.Point3;
@@ -46,14 +61,7 @@ import org.graphstream.ui.graphicGraph.stylesheet.StyleConstants.Units;
 import org.graphstream.ui.graphicGraph.stylesheet.Values;
 import org.graphstream.ui.view.Camera;
 import org.graphstream.ui.view.util.CubicCurve;
-
-import java.awt.Graphics2D;
-import java.awt.geom.AffineTransform;
-import java.awt.geom.NoninvertibleTransformException;
-import java.awt.geom.Point2D;
-import java.util.*;
-import java.util.logging.Level;
-import java.util.logging.Logger;
+import org.graphstream.ui.view.util.InteractiveElement;
 
 /**
  * Define how the graph is viewed.
@@ -348,7 +356,7 @@ public class DefaultCamera implements Camera {
 	}
 
 	/**
-	 * Search for the first node or sprite (in that order) that contains the
+	 * Search for the first GraphicElement among those specified.  Multiple elements are resolved by priority- {@link InteractiveElement.NODE} > {@link InteractiveElement.EDGE} > {@link InteractiveElement.SPRITE}, (in that order) that contains the
 	 * point at coordinates (x, y).
 	 *
 	 * @param graph
@@ -360,49 +368,73 @@ public class DefaultCamera implements Camera {
 	 * @return The first node or sprite at the given coordinates or null if
 	 *         nothing found.
 	 */
-	public GraphicElement findNodeOrSpriteAt(GraphicGraph graph, double x, double y) {
-		try {
-			return (GraphicElement) graph.nodes().filter(node -> {
-				return nodeContains((GraphicElement) node, x, y);
-			}).findFirst().get();
-		} catch(NoSuchElementException e) {
-			return graph.sprites().filter(sprite -> {
-				return spriteContains(sprite, x, y);
-			}).findFirst().orElse(null);
+	@Override
+	public GraphicElement findGraphicElementAt(GraphicGraph graph, EnumSet<InteractiveElement> types, double x, double y) {
+		if (types.contains(InteractiveElement.NODE)) {
+			Optional<Node> node = graph
+				.nodes()
+				.filter(n ->nodeContains((GraphicElement) n, x, y))
+				.findFirst();
+			if(node.isPresent()) {
+				return (GraphicElement) node.get();
+			}
 		}
+		if (types.contains(InteractiveElement.EDGE)) {
+			Optional<Edge> edge = graph
+				.edges()
+				.filter(e ->edgeContains((GraphicElement) e, x, y))
+				.findFirst();
+			if(edge.isPresent()) {
+				return (GraphicElement) edge.get();
+			}
+		}
+		if (types.contains(InteractiveElement.SPRITE)) {
+			Optional<GraphicSprite> sprite = graph
+				.sprites()
+				.filter(s ->spriteContains(s, x, y))
+				.findFirst();
+			if(sprite.isPresent()) {
+				return (GraphicElement) sprite.get();
+			}
+		}
+		return null;
 	}
 
-	/**
-	 * Search for all the nodes and sprites contained inside the rectangle
-	 * (x1,y1)-(x2,y2).
-	 *
-	 * @param graph
-	 *            The graph to search for.
-	 * @param x1
-	 *            The rectangle lowest point abscissa.
-	 * @param y1
-	 *            The rectangle lowest point ordinate.
-	 * @param x2
-	 *            The rectangle highest point abscissa.
-	 * @param y2
-	 *            The rectangle highest point ordinate.
-	 * @return The set of sprites and nodes in the given rectangle.
-	 */
-	public Collection<GraphicElement> allNodesOrSpritesIn(GraphicGraph graph, double x1, double y1, double x2,
-			double y2) {
+	@Override
+	public Collection<GraphicElement> allGraphicElementsIn(GraphicGraph graph, EnumSet<InteractiveElement> types, double x1, double y1, double x2, double y2) {
 		List<GraphicElement> elts = new ArrayList<GraphicElement>();
 
-		for (Node node : graph) {
-			if (isNodeIn((GraphicNode) node, x1, y1, x2, y2))
-				elts.add((GraphicNode) node);
+		Stream nodeStream = null;
+		Stream edgeStream = null;
+		Stream spriteStream = null;
+
+		if (types.contains(InteractiveElement.NODE)) {
+
+			nodeStream = graph.nodes()
+					.filter(n -> isNodeIn((GraphicNode) n, x1, y1, x2, y2));
 		}
-
-		graph.sprites().forEach(sprite -> {
-			if (isSpriteIn(sprite, x1, y1, x2, y2))
-				elts.add(sprite);
-		});
-
-		return Collections.unmodifiableList(elts);
+		else {
+			nodeStream = Stream.empty();
+		}
+		
+		if (types.contains(InteractiveElement.EDGE)) {
+			edgeStream = graph.edges()
+					.filter(e -> isEdgeIn((GraphicEdge) e, x1, y1, x2, y2));
+		}
+		else {
+			edgeStream = Stream.empty();
+		}
+		
+		if (types.contains(InteractiveElement.SPRITE)) {
+			spriteStream = graph.sprites()
+					.filter(e -> isSpriteIn((GraphicSprite) e, x1, y1, x2, y2));
+		}
+		else {
+			spriteStream = Stream.empty();
+		}
+		
+		Stream<GraphicElement> s = Stream.concat(nodeStream, Stream.concat(edgeStream, spriteStream));
+		return s.collect(Collectors.toList());
 	}
 
 	/**
@@ -780,6 +812,47 @@ public class DefaultCamera implements Camera {
 	/**
 	 * Is the given sprite visible in the given area.
 	 *
+	 * @param edge
+	 *            The edge to check.
+	 * @param X1
+	 *            The min abscissa of the area.
+	 * @param Y1
+	 *            The min ordinate of the area.
+	 * @param X2
+	 *            The max abscissa of the area.
+	 * @param Y2
+	 *            The max ordinate of the area.
+	 * @return True if the edge lies in the given area.
+	 */
+	protected boolean isEdgeIn(GraphicEdge edge, double X1, double Y1, double X2, double Y2) {
+		Values size = edge.getStyle().getSize();
+		double w2 = metrics.lengthToPx(size, 0) / 2;
+		double h2 = size.size() > 1 ? metrics.lengthToPx(size, 1) / 2 : w2;
+		Point2D.Double src = new Point2D.Double(edge.getX(), edge.getY());
+		boolean vis = true;
+
+		Tx.transform(src, src);
+
+		double x1 = src.x - w2;
+		double x2 = src.x + w2;
+		double y1 = src.y - h2;
+		double y2 = src.y + h2;
+
+		if (x2 < X1)
+			vis = false;
+		else if (y2 < Y1)
+			vis = false;
+		else if (x1 > X2)
+			vis = false;
+		else if (y1 > Y2)
+			vis = false;
+
+		return vis;
+	}
+
+	/**
+	 * Is the given sprite visible in the given area.
+	 *
 	 * @param sprite
 	 *            The sprite to check.
 	 * @param X1
@@ -887,8 +960,44 @@ public class DefaultCamera implements Camera {
 		return true;
 	}
 
+	/**
+	 * Check if an edge contains the given point (x,y).
+	 *
+	 * @param elt
+	 *            The edge.
+	 * @param x
+	 *            The point abscissa.
+	 * @param y
+	 *            The point ordinate.
+	 * @return True if (x,y) is in the given element.
+	 */
 	protected boolean edgeContains(GraphicElement elt, double x, double y) {
-		return false;
+		Values size = elt.getStyle().getSize();
+		double w2 = metrics.lengthToPx(size, 0) / 2;
+		double h2 = size.size() > 1 ? metrics.lengthToPx(size, 1) / 2 : w2;
+		Point2D.Double src = new Point2D.Double(elt.getX(), elt.getY());
+		Point2D.Double dst = new Point2D.Double();
+
+		Tx.transform(src, dst);
+
+		dst.x -= metrics.viewport[0];
+		dst.y -= metrics.viewport[1];
+
+		double x1 = dst.x - w2;
+		double x2 = dst.x + w2;
+		double y1 = dst.y - h2;
+		double y2 = dst.y + h2;
+
+		if (x < x1)
+			return false;
+		if (y < y1)
+			return false;
+		if (x > x2)
+			return false;
+		if (y > y2)
+			return false;
+
+		return true;
 	}
 
 	/**
